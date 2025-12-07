@@ -431,6 +431,8 @@ impl HidppChannel {
             let raw_channel = Arc::clone(&raw_channel_rc);
             let pending_messages = Arc::clone(&pending_messages_rc);
             let message_listeners = Arc::clone(&message_listeners_rc);
+            let vendor_id = raw_channel_rc.vendor_id();
+            let product_id = raw_channel_rc.product_id();
 
             move || {
                 futures::executor::block_on(async {
@@ -447,6 +449,8 @@ impl HidppChannel {
                         let Ok(len) = res else {
                             continue;
                         };
+
+                        debug!("[{:04x}:{:04x}] received raw report: {:02x?}", vendor_id, product_id, &buf[..len]);
 
                         let Some(msg) = HidppMessage::read_raw(&buf[..len]) else {
                             continue;
@@ -577,6 +581,7 @@ impl HidppChannel {
 
         let mut buf = [0u8; LONG_REPORT_LENGTH];
         let len = msg.write_raw_for_channel(&mut buf, self.supports_short, self.supports_long)?;
+        debug!("[{:04x}:{:04x}] sending raw report: {:02x?}", self.vendor_id, self.product_id, &buf[..len]);
         self.raw_channel
             .write_report(&buf[..len])
             .await
