@@ -19,6 +19,7 @@ use hidpp::{
 use owo_colors::OwoColorize;
 use serde::Serialize;
 use serde_json::json;
+use tracing::debug;
 
 use super::Cli;
 use crate::{
@@ -196,31 +197,31 @@ async fn probe_devices() -> Result<Vec<ProbedDevice>> {
     let channels: Vec<Arc<HidppChannel>> =
         enumerate_hidpp().await?.into_iter().map(Arc::new).collect();
 
-    eprintln!("DEBUG: Found {} HID++ channels", channels.len());
+    debug!("Found {} HID++ channels", channels.len());
 
     let mut devices = Vec::with_capacity(channels.len());
     for (i, channel) in channels.iter().enumerate() {
         if channel.vendor_id != 0x046d {
-            eprintln!("DEBUG: Skipping device {:04x}:{:04x} (not Logitech)", channel.vendor_id, channel.product_id);
+            debug!("Skipping device {:04x}:{:04x} (not Logitech)", channel.vendor_id, channel.product_id);
             continue;
         }
 
         // TODO fix enumeration of the blacklisted devices
         if matches!(channel.product_id, 0x1024 | 0x406f | 0xc52b) {
-            eprintln!("DEBUG: Skipping device {:04x}:{:04x} (blacklisted)", channel.vendor_id, channel.product_id);
+            debug!("Skipping device {:04x}:{:04x} (blacklisted)", channel.vendor_id, channel.product_id);
             continue;
         }
 
-        eprintln!("DEBUG: Probing device {:04x}:{:04x} on channel {}", channel.vendor_id, channel.product_id, i);
+        debug!("Probing device {:04x}:{:04x} on channel {}", channel.vendor_id, channel.product_id, i);
         let mut device = match Device::new(Arc::clone(channel), 0xff).await {
             Ok(device) => device,
             Err(err) => {
-                eprintln!("DEBUG: Skipping device {:04x}:{:04x}: failed to create device: {}", channel.vendor_id, channel.product_id, err);
+                debug!("Skipping device {:04x}:{:04x}: failed to create device: {}", channel.vendor_id, channel.product_id, err);
                 continue;
             }
         };
         if let Err(err) = device.enumerate_features().await {
-            eprintln!("DEBUG: Skipping device {:04x}:{:04x}: failed to enumerate features: {}", channel.vendor_id, channel.product_id, err);
+            debug!("Skipping device {:04x}:{:04x}: failed to enumerate features: {}", channel.vendor_id, channel.product_id, err);
             continue;
         }
 
@@ -248,11 +249,17 @@ async fn probe_receivers() -> Result<Vec<ProbedReceiver>> {
     let channels: Vec<Arc<HidppChannel>> =
         enumerate_hidpp().await?.into_iter().map(Arc::new).collect();
 
+    debug!("Found {} HID++ channels", channels.len());
+
     let mut receivers = Vec::with_capacity(channels.len());
-    for channel in channels {
-        let Some(receiver) = receiver::detect(Arc::clone(&channel)) else {
+    for (i, channel) in channels.iter().enumerate() {
+        debug!("Checking channel {} for receiver support", i);
+        let Some(receiver) = receiver::detect(Arc::clone(channel)) else {
+            debug!("Channel {} is not a receiver", i);
             continue;
         };
+
+        debug!("Channel {} is a receiver: {}", i, receiver.name());
 
         let mut paired_devices = receiver.get_paired_devices().await?;
         paired_devices.sort_by_key(|x| x.slot);

@@ -20,6 +20,7 @@ use hidpp::{
 };
 use itertools::Itertools;
 use tokio::sync::Mutex;
+use tracing::debug;
 
 struct AsyncHidDevice(Mutex<DeviceReader>, Mutex<DeviceWriter>, DeviceInfo);
 
@@ -77,8 +78,12 @@ pub async fn enumerate_hidpp() -> Result<Vec<HidppChannel>> {
         .unique_by(|x| x.id.clone())
         .collect();
 
+    debug!("Found {} HID devices", devices.len());
+
     let mut channels = Vec::new();
-    for dev in devices.into_iter() {
+    for (i, dev) in devices.into_iter().enumerate() {
+        debug!("Device {}: {:04x}:{:04x} - {:?} - {}", i, dev.vendor_id, dev.product_id, dev.serial_number, dev.name);
+
         let opened = dev.open().await?;
 
         let channel = match HidppChannel::from_raw_channel(AsyncHidDevice(
@@ -88,9 +93,16 @@ pub async fn enumerate_hidpp() -> Result<Vec<HidppChannel>> {
         ))
         .await
         {
-            Ok(channel) => channel,
-            Err(ChannelError::HidppNotSupported) => continue,
+            Ok(channel) => {
+                debug!("  Device {} supports HID++", i);
+                channel
+            },
+            Err(ChannelError::HidppNotSupported) => {
+                debug!("  Device {} does not support HID++", i);
+                continue;
+            },
             Err(other) => {
+                debug!("  Device {} error: {}", i, other);
                 return Err(
                     anyhow::Error::new(other).context("could not initialize the HID++ channel")
                 );
