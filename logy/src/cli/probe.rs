@@ -35,129 +35,154 @@ impl ProbeCommand {
         let mut stdout = BufWriter::new(anstream::stdout());
 
         let receivers = probe_receivers().await?;
+        let devices = probe_devices().await?;
 
         if root.json {
-            writeln!(stdout, "{}", json!(receivers)).unwrap();
+            // TODO think about combining receivers and devices into a single JSON array
+            let combined_output = json!({
+                "receivers": receivers,
+                "devices": devices
+            });
+            writeln!(stdout, "{}", combined_output).unwrap();
             return Ok(());
         }
 
         if receivers.is_empty() {
-            writeln!(stdout, "{}", "No HID++ devices were found.".bright_black()).unwrap();
-            return Ok(());
-        }
+            writeln!(stdout, "{}", "No HID++ receivers were found.".bright_black()).unwrap();
+        } else {
+            writeln!(stdout, "{}", "HID++ receivers:".bright_black()).unwrap();
 
-        for (receiver_i, receiver) in receivers.into_iter().enumerate() {
-            if receiver_i != 0 {
-                writeln!(stdout).unwrap();
-            }
-
-            writeln!(
-                stdout,
-                "{}: {} ({:#06x}:{:#06x})",
-                receiver.unique_id.bright_black(),
-                receiver.name,
-                receiver.vendor_id.bright_black(),
-                receiver.product_id.bright_black()
-            )
-            .unwrap();
-            writeln!(stdout, " │").unwrap();
-
-            if receiver.paired_devices.is_empty() {
-                writeln!(
-                    stdout,
-                    " ╰─ {}",
-                    "No devices were found.".bright_black().italic()
-                )
-                .unwrap();
-                return Ok(());
-            }
-
-            let devices_len = receiver.paired_devices.len();
-            for (device_i, device) in receiver.paired_devices.into_iter().enumerate() {
-                if device_i != 0 {
-                    writeln!(stdout, " │").unwrap();
+            for (receiver_i, receiver) in receivers.into_iter().enumerate() {
+                if receiver_i != 0 {
+                    writeln!(stdout).unwrap();
                 }
 
                 writeln!(
                     stdout,
-                    "{} {}: {} {} ({:?}) ({:#06x})",
-                    if device_i == devices_len - 1 {
-                        " ╰─"
-                    } else {
-                        " ├─"
-                    },
-                    device.slot.bright_blue(),
-                    if device.online {
-                        "●".green().into_styled()
-                    } else {
-                        "●".red().into_styled()
-                    },
-                    if device.online {
-                        device.name
-                    } else {
-                        device.name.bright_black().italic().to_string()
-                    },
-                    device.kind.green(),
-                    device.wpid.bright_black(),
+                    "{}: {} ({:#06x}:{:#06x})",
+                    receiver.unique_id.bright_black(),
+                    receiver.name,
+                    receiver.vendor_id.bright_black(),
+                    receiver.product_id.bright_black()
                 )
                 .unwrap();
+                writeln!(stdout, " │").unwrap();
 
-                if !device.online {
-                    continue;
-                }
-
-                let mut properties = Vec::new();
-                if let Some(kind) = device.properties.kind {
-                    properties.push(format!("TYPE: {:?}", kind.bright_black()));
-                }
-                if let Some(full_name) = device.properties.full_name {
-                    properties.push(format!("FULL NAME: {}", full_name.bright_black()));
-                }
-                if let Some(friendly_name) = device.properties.friendly_name {
-                    properties.push(format!("FRIENDLY NAME: {}", friendly_name.bright_black()));
-                }
-                if let Some(battery_percentage) = device.properties.battery_percentage {
-                    if let Some(battery_level) = device.properties.battery_level {
-                        if let Some(battery_status) = device.properties.battery_status {
-                            properties.push(format!(
-                                "BATTERY: {:?} ({}), {:?}",
-                                match battery_level {
-                                    BatteryLevel::Full | BatteryLevel::Good =>
-                                        battery_level.green().into_styled(),
-                                    BatteryLevel::Low => battery_level.yellow().into_styled(),
-                                    BatteryLevel::Critical =>
-                                        battery_level.bright_red().into_styled(),
-                                    _ => battery_level.default_color().into_styled(),
-                                },
-                                format!("{}%", battery_percentage).blue(),
-                                battery_status.bright_black()
-                            ));
-                        }
-                    }
-                }
-                if let Some(serial_number) = device.properties.serial_number {
-                    properties.push(format!("SERIAL NUMBER: {}", serial_number.bright_black()));
-                }
-
-                let properties_len = properties.len();
-                for (propery_i, property) in properties.into_iter().enumerate() {
+                if receiver.paired_devices.is_empty() {
                     writeln!(
                         stdout,
-                        "{}{} {}",
-                        if device_i == devices_len - 1 {
-                            "         "
-                        } else {
-                            " │       "
-                        },
-                        if propery_i == properties_len - 1 {
-                            "╰─"
-                        } else {
-                            "├─"
-                        },
-                        property
+                        " ╰─ {}",
+                        "No devices were found.".bright_black().italic()
                     )
                     .unwrap();
+                    return Ok(());
                 }
+
+                let devices_len = receiver.paired_devices.len();
+                for (device_i, device) in receiver.paired_devices.into_iter().enumerate() {
+                    if device_i != 0 {
+                        writeln!(stdout, " │").unwrap();
+                    }
+
+                    writeln!(
+                        stdout,
+                        "{} {}: {} {} ({:?}) ({:#06x})",
+                        if device_i == devices_len - 1 {
+                            " ╰─"
+                        } else {
+                            " ├─"
+                        },
+                        device.slot.bright_blue(),
+                        if device.online {
+                            "●".green().into_styled()
+                        } else {
+                            "●".red().into_styled()
+                        },
+                        if device.online {
+                            device.name
+                        } else {
+                            device.name.bright_black().italic().to_string()
+                        },
+                        device.kind.green(),
+                        device.wpid.bright_black(),
+                    )
+                    .unwrap();
+
+                    if !device.online {
+                        continue;
+                    }
+
+                    let mut properties = Vec::new();
+                    if let Some(kind) = device.properties.kind {
+                        properties.push(format!("TYPE: {:?}", kind.bright_black()));
+                    }
+                    if let Some(full_name) = device.properties.full_name {
+                        properties.push(format!("FULL NAME: {}", full_name.bright_black()));
+                    }
+                    if let Some(friendly_name) = device.properties.friendly_name {
+                        properties.push(format!("FRIENDLY NAME: {}", friendly_name.bright_black()));
+                    }
+                    if let Some(battery_percentage) = device.properties.battery_percentage {
+                        if let Some(battery_level) = device.properties.battery_level {
+                            if let Some(battery_status) = device.properties.battery_status {
+                                properties.push(format!(
+                                    "BATTERY: {:?} ({}), {:?}",
+                                    match battery_level {
+                                        BatteryLevel::Full | BatteryLevel::Good =>
+                                            battery_level.green().into_styled(),
+                                        BatteryLevel::Low => battery_level.yellow().into_styled(),
+                                        BatteryLevel::Critical =>
+                                            battery_level.bright_red().into_styled(),
+                                        _ => battery_level.default_color().into_styled(),
+                                    },
+                                    format!("{}%", battery_percentage).blue(),
+                                    battery_status.bright_black()
+                                ));
+                            }
+                        }
+                    }
+                    if let Some(serial_number) = device.properties.serial_number {
+                        properties.push(format!("SERIAL NUMBER: {}", serial_number.bright_black()));
+                    }
+
+                    let properties_len = properties.len();
+                    for (propery_i, property) in properties.into_iter().enumerate() {
+                        writeln!(
+                            stdout,
+                            "{}{} {}",
+                            if device_i == devices_len - 1 {
+                                "         "
+                            } else {
+                                " │       "
+                            },
+                            if propery_i == properties_len - 1 {
+                                "╰─"
+                            } else {
+                                "├─"
+                            },
+                            property
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+        }
+
+        if devices.is_empty() {
+            writeln!(stdout, "{}", "No HID++ devices were found.".bright_black()).unwrap();
+        } else {
+            writeln!(stdout, "{}", "HID++ devices:".bright_black()).unwrap();
+            for (device_i, device) in devices.into_iter().enumerate() {
+                writeln!(
+                    stdout,
+                    "{} {}: {} ({:#06x}:{:#06x})",
+                    "●".yellow().into_styled(),
+                    device.unique_id.bright_black(),
+                    device.name,
+                    device.vendor_id.bright_black(),
+                    device.product_id.bright_black()
+                )
+                .unwrap();
             }
         }
 
@@ -165,6 +190,58 @@ impl ProbeCommand {
 
         Ok(())
     }
+}
+
+async fn probe_devices() -> Result<Vec<ProbedDevice>> {
+    let channels: Vec<Arc<HidppChannel>> =
+        enumerate_hidpp().await?.into_iter().map(Arc::new).collect();
+
+    eprintln!("DEBUG: Found {} HID++ channels", channels.len());
+
+    let mut devices = Vec::with_capacity(channels.len());
+    for (i, channel) in channels.iter().enumerate() {
+        if channel.vendor_id != 0x046d {
+            eprintln!("DEBUG: Skipping device {:04x}:{:04x} (not Logitech)", channel.vendor_id, channel.product_id);
+            continue;
+        }
+
+        // TODO fix enumeration of the blacklisted devices
+        if matches!(channel.product_id, 0x1024 | 0x406f | 0xc52b) {
+            eprintln!("DEBUG: Skipping device {:04x}:{:04x} (blacklisted)", channel.vendor_id, channel.product_id);
+            continue;
+        }
+
+        eprintln!("DEBUG: Probing device {:04x}:{:04x} on channel {}", channel.vendor_id, channel.product_id, i);
+        let mut device = match Device::new(Arc::clone(channel), 0xff).await {
+            Ok(device) => device,
+            Err(err) => {
+                eprintln!("DEBUG: Skipping device {:04x}:{:04x}: failed to create device: {}", channel.vendor_id, channel.product_id, err);
+                continue;
+            }
+        };
+        if let Err(err) = device.enumerate_features().await {
+            eprintln!("DEBUG: Skipping device {:04x}:{:04x}: failed to enumerate features: {}", channel.vendor_id, channel.product_id, err);
+            continue;
+        }
+
+        let unique_id = if let Some(feature) = device.get_feature::<DeviceInformationFeature>() {
+            feature.get_serial_number().await?
+        } else {
+            format!("{:04x}:{:04x}", channel.vendor_id, channel.product_id)
+        };
+
+        devices.push(ProbedDevice {
+            name: format!(
+                "HID++ Device ({:04x}:{:04x})",
+                channel.vendor_id, channel.product_id
+            ),
+            unique_id,
+            vendor_id: channel.vendor_id,
+            product_id: channel.product_id,
+        });
+    }
+
+    Ok(devices)
 }
 
 async fn probe_receivers() -> Result<Vec<ProbedReceiver>> {
@@ -253,6 +330,14 @@ async fn probe_properties(device: Device) -> Result<ProbedDeviceProperties> {
     }
 
     Ok(properties)
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize)]
+struct ProbedDevice {
+    name: String,
+    unique_id: String,
+    vendor_id: u16,
+    product_id: u16,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize)]
