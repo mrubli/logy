@@ -304,6 +304,42 @@ impl HidppMessage {
             },
         }
     }
+
+    /// Writes a HID++ message in its raw byte form into a buffer, choosing the
+    /// shortest report format that fits the data and is supported by the channel.
+    ///
+    /// Returns the amount of written bytes.
+    pub fn write_raw_for_channel(&self, buf: &mut [u8], supports_short: bool, supports_long: bool) -> Result<usize, ChannelError> {
+        if !supports_short && !supports_long {
+            return Err(ChannelError::HidppNotSupported);
+        }
+
+        let payload = match self {
+            Self::Short(payload) => &payload[..],
+            Self::Long(payload) => &payload[..],
+        };
+
+        // Try to use short format if it fits and is supported
+        if supports_short && payload.len() <= SHORT_REPORT_LENGTH - 1 {
+            buf[0] = SHORT_REPORT_ID;
+            buf[1..1 + payload.len()].copy_from_slice(payload);
+            // Zero-pad if payload is shorter than expected short report length
+            if payload.len() < SHORT_REPORT_LENGTH - 1 {
+                buf[1 + payload.len()..SHORT_REPORT_LENGTH].fill(0);
+            }
+            Ok(SHORT_REPORT_LENGTH)
+        } else if supports_long {
+            buf[0] = LONG_REPORT_ID;
+            buf[1..1 + payload.len()].copy_from_slice(payload);
+            // Zero-pad if payload is shorter than expected long report length
+            if payload.len() < LONG_REPORT_LENGTH - 1 {
+                buf[1 + payload.len()..LONG_REPORT_LENGTH].fill(0);
+            }
+            Ok(LONG_REPORT_LENGTH)
+        } else {
+            Err(ChannelError::MessageTypeNotSupported)
+        }
+    }
 }
 
 type MessageListener = Box<dyn Fn(HidppMessage, bool) + Send>;
@@ -511,9 +547,9 @@ impl HidppChannel {
         msg: HidppMessage,
         response_predicate: impl Fn(&HidppMessage) -> bool + Send + 'static,
     ) -> Result<HidppMessage, ChannelError> {
-        if !self.supports_msg(&msg) {
-            return Err(ChannelError::MessageTypeNotSupported);
-        }
+        //if !self.supports_msg(&msg) {
+        //    return Err(ChannelError::MessageTypeNotSupported);
+        //}
 
         let (sender, receiver) = oneshot::channel::<HidppMessage>();
 
@@ -535,12 +571,12 @@ impl HidppChannel {
     ///
     /// If a response is expected, use [`Self::send`],
     pub async fn send_and_forget(&self, msg: HidppMessage) -> Result<(), ChannelError> {
-        if !self.supports_msg(&msg) {
-            return Err(ChannelError::MessageTypeNotSupported);
-        }
+        //if !self.supports_msg(&msg) {
+        //    return Err(ChannelError::MessageTypeNotSupported);
+        //}
 
         let mut buf = [0u8; LONG_REPORT_LENGTH];
-        let len = msg.write_raw(&mut buf);
+        let len = msg.write_raw_for_channel(&mut buf, self.supports_short, self.supports_long)?;
         self.raw_channel
             .write_report(&buf[..len])
             .await
