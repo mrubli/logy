@@ -33,8 +33,11 @@ const MAX_REPORT_LENGTH: usize = LONG_REPORT_LENGTH;
 /// The ID of the HID report that is used to transmit short HID++ messages.
 pub const SHORT_REPORT_ID: u8 = 0x10;
 
-/// The HID usage page ID of short HID++ message reports.
-pub const SHORT_REPORT_USAGE_PAGE: u16 = 0xff00;
+/// The HID usage page ID of legacy short HID++ message reports.
+pub const HIDPP_REPORT_LEGACY_USAGE_PAGE: u16 = 0xff00;
+
+/// The HID usage page ID of modern HID++ message reports.
+pub const HIDPP_REPORT_MODERN_USAGE_PAGE: u16 = 0xff43;
 
 /// The HID usage ID of short HID++ message reports.
 pub const SHORT_REPORT_USAGE: u16 = 0x0001;
@@ -44,9 +47,6 @@ pub const SHORT_REPORT_LENGTH: usize = 7;
 
 /// The ID of the HID report that is used to transmit long HID++ messages.
 pub const LONG_REPORT_ID: u8 = 0x11;
-
-/// The HID usage page ID of long HID++ message reports.
-pub const LONG_REPORT_USAGE_PAGE: u16 = 0xff00;
 
 /// The HID usage ID of long HID++ message reports.
 pub const LONG_REPORT_USAGE: u16 = 0x0002;
@@ -101,6 +101,82 @@ pub trait RawHidChannel: Sync + Send + 'static {
     ) -> Result<usize, Box<dyn Error + Sync + Send>>;
 }
 
+/// Determines HID++ scheme and report support by analyzing collections
+fn check_hidpp_support(descriptor: &ReportDescriptor) -> (bool, bool) {
+    let mut supports_short = false;
+    let mut supports_long = false;
+
+    if have_input_and_output_report(descriptor, SHORT_REPORT_ID, HIDPP_REPORT_LEGACY_USAGE_PAGE, SHORT_REPORT_USAGE) {
+        supports_short = true;
+    }
+
+    if have_input_and_output_report(descriptor, LONG_REPORT_ID, HIDPP_REPORT_LEGACY_USAGE_PAGE, LONG_REPORT_USAGE) {
+        supports_long = true;
+    }
+
+    if !supports_short
+        && have_input_and_output_report(descriptor, SHORT_REPORT_ID, HIDPP_REPORT_MODERN_USAGE_PAGE, SHORT_REPORT_USAGE)
+    {
+        supports_short = true;
+    }
+
+    if !supports_long
+        && have_input_and_output_report(descriptor, LONG_REPORT_ID, HIDPP_REPORT_MODERN_USAGE_PAGE, LONG_REPORT_USAGE)
+    {
+        supports_long = true;
+    }
+
+    (supports_short, supports_long)
+}
+
+/// Checks whether both input and output reports with specific characteristics exist
+fn have_input_and_output_report(descriptor: &ReportDescriptor, report_id: u8, usage_page: u16, usage_id: u16) -> bool {
+    if let Some(_) = find_report(descriptor.input_reports(), report_id, usage_page, usage_id) {
+        if find_report(descriptor.output_reports(), report_id, usage_page, usage_id).is_some() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Finds a HID++ report with specific characteristics
+fn find_report<T: Report>(reports: &[T], report_id: u8, usage_page: u16, usage_id: u16) -> Option<&T> {
+    let target_usage = Usage::from_page_and_id(UsagePage::from(usage_page), UsageId::from(usage_id));
+
+    reports.iter().find(|report| {
+        // Check if this report has the right ID
+        let matches_id = match report.report_id() {
+            Some(id) => u8::from(*id) == report_id,
+            None => report_id == 0, // Default report
+        };
+
+        if !matches_id {
+            return false;
+        }
+
+        // Check if any field has the target usage
+        for field in report.fields() {
+            match field {
+                Field::Array(arr) => {
+                    if arr.usage_range().lookup_usage(&target_usage).is_some() {
+                        return true;
+                    }
+                },
+                Field::Variable(var) => {
+                    if var.usage == target_usage {
+                        return true;
+                    }
+                },
+                Field::Constant(_) => {
+                    // Constants don't have usages
+                }
+            }
+        }
+
+        false
+    })
+}
+
 /// Checks whether a raw channel supports short or long HID++ messages.
 async fn supports_short_long_hidpp(
     chan: &impl RawHidChannel,
@@ -117,37 +193,8 @@ async fn supports_short_long_hidpp(
         Err(err) => return Err(ChannelError::ReportDescriptor(err)),
     };
 
-    let supports_short = descriptor
-        .find_input_report(&[SHORT_REPORT_ID])
-        .and_then(|report| report.fields().first())
-        .and_then(|field| match field {
-            Field::Array(arr) => Some(arr.usage_range()),
-            _ => None,
-        })
-        .is_some_and(|range| {
-            range
-                .lookup_usage(&Usage::from_page_and_id(
-                    UsagePage::from(SHORT_REPORT_USAGE_PAGE),
-                    UsageId::from(SHORT_REPORT_USAGE),
-                ))
-                .is_some()
-        });
-
-    let supports_long = descriptor
-        .find_input_report(&[LONG_REPORT_ID])
-        .and_then(|report| report.fields().first())
-        .and_then(|field| match field {
-            Field::Array(arr) => Some(arr.usage_range()),
-            _ => None,
-        })
-        .is_some_and(|range| {
-            range
-                .lookup_usage(&Usage::from_page_and_id(
-                    UsagePage::from(LONG_REPORT_USAGE_PAGE),
-                    UsageId::from(LONG_REPORT_USAGE),
-                ))
-                .is_some()
-        });
+    // Check for HID++ support using both legacy and modern schemes
+    let (supports_short, supports_long) = check_hidpp_support(&descriptor);
 
     Ok((supports_short, supports_long))
 }
