@@ -26,6 +26,14 @@ enum Commands {
 pub async fn execute() -> Result<()> {
     let cli = Cli::parse();
 
+    // Initialize tracing subscriber.
+    // The EnvFilter allows configuring the log level via the RUST_LOG environment variable, e.g.
+    // RUST_LOG=debug or RUST_LOG=hidpp=trace.
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_target(false)
+        .init();
+
     cli.color.write_global();
 
     match &cli.command {
