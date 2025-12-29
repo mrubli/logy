@@ -142,17 +142,21 @@ impl Device {
         let count = feature_set_feature.count().await?;
         let mut features = Vec::with_capacity(count as usize);
         for i in 1..=count {
+            // Find out what feature is at index i
             let info = feature_set_feature.get_feature(i).await?;
             features.push(info);
 
+            // Skip the FeatureSet feature itself
             if i == feature_set_info.index {
                 continue;
             }
 
+            // Check if we have an implementation for this feature
             let Some(impls) = feature::registry::lookup_version(info.id, info.version) else {
                 continue;
             };
 
+            // Add all implementations for this feature
             for feat_impl in impls {
                 let (type_id, instance) =
                     (feat_impl.producer)(Arc::clone(&self.chan), self.device_index, i);
