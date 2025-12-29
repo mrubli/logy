@@ -18,6 +18,7 @@ use futures::{FutureExt, channel::oneshot, select};
 use hidreport::{Field, Report, ReportDescriptor, Usage, UsageId, UsagePage};
 use rand::Rng;
 use thiserror::Error;
+use tracing::debug;
 
 use crate::nibble::U4;
 
@@ -101,30 +102,77 @@ pub trait RawHidChannel: Sync + Send + 'static {
     ) -> Result<usize, Box<dyn Error + Sync + Send>>;
 }
 
+/// Dumps report descriptor contents for debugging
+fn dump_report_descriptor(descriptor: &ReportDescriptor) {
+    // Dump input reports
+    for report in descriptor.input_reports() {
+        dump_report("Input ", report);
+    }
+
+    // Dump output reports
+    for report in descriptor.output_reports() {
+        dump_report("Output", report);
+    }
+}
+
+/// Dumps a single report's details
+fn dump_report<T: Report>(report_type: &str, report: &T) {
+    let report_id = match report.report_id() {
+        Some(id) => u8::from(*id),
+        None => 0,
+    };
+
+    // Check if all fields point to the same usage
+    let mut usages = std::collections::HashSet::new();
+    for field in report.fields() {
+        for collection in field.collections() {
+            for usage in collection.usages() {
+                usages.insert((u16::from(usage.usage_page), u16::from(usage.usage_id)));
+            }
+        }
+    }
+
+    if usages.len() == 1 {
+        let (usage_page, usage_id) = usages.iter().next().unwrap();
+        debug!("  {} report ID {:2}: usage page 0x{:04x}, usage 0x{:04x}",
+                report_type, report_id, usage_page, usage_id);
+    } else {
+        debug!("  {} report ID {:2}: multiple usages", report_type, report_id);
+    }
+}
+
 /// Determines HID++ scheme and report support by analyzing collections
 fn check_hidpp_support(descriptor: &ReportDescriptor) -> (bool, bool) {
+    dump_report_descriptor(descriptor);
+
     let mut supports_short = false;
     let mut supports_long = false;
 
     if have_input_and_output_report(descriptor, SHORT_REPORT_ID, HIDPP_REPORT_LEGACY_USAGE_PAGE, SHORT_REPORT_USAGE) {
         supports_short = true;
+        //debug!("  Legacy short report found");
     }
 
     if have_input_and_output_report(descriptor, LONG_REPORT_ID, HIDPP_REPORT_LEGACY_USAGE_PAGE, LONG_REPORT_USAGE) {
         supports_long = true;
+        //debug!("  Legacy long report found");
     }
 
     if !supports_short
         && have_input_and_output_report(descriptor, SHORT_REPORT_ID, HIDPP_REPORT_MODERN_USAGE_PAGE, SHORT_REPORT_USAGE)
     {
         supports_short = true;
+        //debug!("  Modern short report found");
     }
 
     if !supports_long
         && have_input_and_output_report(descriptor, LONG_REPORT_ID, HIDPP_REPORT_MODERN_USAGE_PAGE, LONG_REPORT_USAGE)
     {
         supports_long = true;
+        //debug!("  Modern long report found");
     }
+
+    debug!("  HID++ detection result: short: {}, long: {}", supports_short, supports_long);
 
     (supports_short, supports_long)
 }
