@@ -18,7 +18,7 @@ use futures::{FutureExt, channel::oneshot, select};
 use hidreport::{Field, Report, ReportDescriptor, Usage, UsageId, UsagePage};
 use rand::Rng;
 use thiserror::Error;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::nibble::U4;
 
@@ -83,6 +83,20 @@ pub trait RawHidChannel: Sync + Send + 'static {
     ///
     /// Returns the exact amount or read bytes on success.
     async fn read_report(&self, buf: &mut [u8]) -> Result<usize, Box<dyn Error + Sync + Send>>;
+
+    /// Classifies an error returned by [`Self::read_report`] as either a
+    /// permanent disconnect or a transient error.
+    ///
+    /// When this returns `true`, the channel's read thread stops reading and
+    /// notifies any registered disconnect listeners (see
+    /// [`HidppChannel::add_disconnect_listener`]) instead of retrying. This
+    /// prevents busy-spinning on a device that has been unplugged and whose
+    /// reads fail immediately and indefinitely.
+    ///
+    /// The default implementation treats every read error as transient.
+    fn is_disconnect_error(&self, _error: &(dyn Error + Send + Sync + 'static)) -> bool {
+        false
+    }
 
     /// If the implementation already knows whether the underlying HID channel
     /// supports HID++ messages, it should return `Some((supports_short,
@@ -344,6 +358,10 @@ impl HidppMessage {
 
 type MessageListener = Box<dyn Fn(HidppMessage, bool) + Send>;
 
+/// A listener that is invoked once when the channel detects that the device has
+/// been disconnected.
+type DisconnectListener = Box<dyn Fn() + Send>;
+
 /// Represents a HID communication channel supporting HID++.
 pub struct HidppChannel {
     /// Whether the channel supports short (7 bytes) HID++ messages.
@@ -374,6 +392,10 @@ pub struct HidppChannel {
     /// messages.
     message_listeners: Arc<Mutex<HashMap<u32, MessageListener>>>,
 
+    /// Registered listeners that will be notified once when the device is
+    /// detected to have been disconnected.
+    disconnect_listeners: Arc<Mutex<HashMap<u32, DisconnectListener>>>,
+
     /// The sender signaling the read thread to stop.
     read_thread_close: Option<oneshot::Sender<()>>,
 
@@ -393,7 +415,11 @@ impl Drop for HidppChannel {
         }
 
         if let Some(read_thread_hdl) = self.read_thread_hdl.take() {
-            read_thread_hdl.join().unwrap();
+            // Avoid turning a read-thread panic into a double panic during drop,
+            // which would abort the process; log it instead.
+            if read_thread_hdl.join().is_err() {
+                warn!("HID++ channel read thread panicked");
+            }
         }
     }
 }
@@ -424,6 +450,7 @@ impl HidppChannel {
         let raw_channel_rc = Arc::new(raw);
         let pending_messages_rc = Arc::new(Mutex::new(VecDeque::<PendingMessage>::new()));
         let message_listeners_rc = Arc::new(Mutex::new(HashMap::<u32, MessageListener>::new()));
+        let disconnect_listeners_rc = Arc::new(Mutex::new(HashMap::<u32, DisconnectListener>::new()));
 
         let (close_sender, mut close_receiver) = oneshot::channel::<()>();
 
@@ -431,6 +458,7 @@ impl HidppChannel {
             let raw_channel = Arc::clone(&raw_channel_rc);
             let pending_messages = Arc::clone(&pending_messages_rc);
             let message_listeners = Arc::clone(&message_listeners_rc);
+            let disconnect_listeners = Arc::clone(&disconnect_listeners_rc);
             let vendor_id = raw_channel_rc.vendor_id();
             let product_id = raw_channel_rc.product_id();
 
@@ -446,8 +474,22 @@ impl HidppChannel {
                             res = raw_channel.read_report(&mut buf).fuse() => res
                         };
 
-                        let Ok(len) = res else {
-                            continue;
+                        let len = match res {
+                            Ok(len) => len,
+                            Err(err) => {
+                                // Stop reading on a permanent disconnect (e.g. the
+                                // device was unplugged); otherwise reads would fail
+                                // immediately and indefinitely, busy-spinning the
+                                // read thread.
+                                if raw_channel.is_disconnect_error(err.as_ref()) {
+                                    debug!("[{:04x}:{:04x}] device disconnected; stopping read thread", vendor_id, product_id);
+                                    for listener in disconnect_listeners.lock().unwrap().values() {
+                                        listener();
+                                    }
+                                    break;
+                                }
+                                continue;
+                            },
                         };
 
                         debug!("[{:04x}:{:04x}] received raw report: {:02x?}", vendor_id, product_id, &buf[..len]);
@@ -484,6 +526,7 @@ impl HidppChannel {
             software_id: AtomicU8::new(0x01),
             pending_messages: pending_messages_rc,
             message_listeners: message_listeners_rc,
+            disconnect_listeners: disconnect_listeners_rc,
             read_thread_close: Some(close_sender),
             read_thread_hdl: Some(read_thread_hdl),
         })
@@ -611,6 +654,40 @@ impl HidppChannel {
     /// Returns whether a listener was found using the given handle.
     pub fn remove_msg_listener(&self, hdl: u32) -> bool {
         self.message_listeners
+            .lock()
+            .unwrap()
+            .remove(&hdl)
+            .is_some()
+    }
+
+    /// Registers a listener that will be called once when the device is detected
+    /// to have been disconnected.
+    ///
+    /// The disconnect is detected when [`RawHidChannel::read_report`] returns an
+    /// error that [`RawHidChannel::is_disconnect_error`] classifies as a
+    /// disconnect. After that, the channel's read thread terminates and no
+    /// further messages will be received.
+    ///
+    /// Returns a handle that can be used to remove the listener using a call to
+    /// [`Self::remove_disconnect_listener`].
+    pub fn add_disconnect_listener(&self, listener: impl Fn() + Send + 'static) -> u32 {
+        let mut listeners = self.disconnect_listeners.lock().unwrap();
+
+        let mut rng = rand::rng();
+        let mut hdl = rng.random::<u32>();
+        while listeners.contains_key(&hdl) {
+            hdl = rng.random::<u32>();
+        }
+
+        listeners.insert(hdl, Box::new(listener));
+        hdl
+    }
+
+    /// Removes a previously registered disconnect listener.
+    ///
+    /// Returns whether a listener was found using the given handle.
+    pub fn remove_disconnect_listener(&self, hdl: u32) -> bool {
+        self.disconnect_listeners
             .lock()
             .unwrap()
             .remove(&hdl)
